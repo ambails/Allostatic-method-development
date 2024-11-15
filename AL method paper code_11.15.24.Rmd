@@ -1,0 +1,1411 @@
+---
+title: "AL code Method Development"
+output: html_document
+date: "2024-10-04"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r cars}
+#install.packages("openxlsx")
+#install.packages("gtsummary")
+#install.packages("ordinalNet")
+#install.packages(reshape2)
+#install.packages("rstatix")
+#install.packages("car")
+#install.packages("ggrepel")
+#install.packages("ggsci")
+#install.packages("cowplot")
+#install.packages("ggpubr")
+#install.packages("rlang")
+#install.packages("wesanderson")
+#installed.packages("writexl")
+
+```
+
+
+```{r}
+library(readxl)
+library(openxlsx)
+library(tidyverse)
+library(gtsummary)
+library(ordinalNet)
+library(reshape2)
+library(rstatix)
+library(car)
+library(ggrepel)
+library(ggsci)
+library(cowplot)
+library(ggpubr)
+library(rlang)
+library(wesanderson)
+#library(writexl)
+```
+
+
+```{r}
+# reading in file
+# reading in file
+bp_df = data.frame(read_excel("~/Documents/1. Allostatic load method development/R files/Allostatic_Mediator_Data_050824.xlsx", sheet = 4)) 
+subject_info_df = data.frame(read_excel("~/Documents/1. Allostatic load method development/R files/Subject_Info_050824.xlsx", sheet = 2))
+mediator_scores_df = data.frame(read_excel("~/Documents/1. Allostatic load method development/R files/Mediator_Scores_061424.xlsx"))
+biomarker_df = data.frame(read_excel("~/Documents/1. Allostatic load method development/R files/Allostatic_Mediator_Data_050824.xlsx", sheet = 2)) 
+
+```
+
+```{r}
+head(bp_df)
+head(subject_info_df)
+head(mediator_scores_df)
+```
+
+```{r}
+# creating a vector for variables that refelct acute stress
+acute_biomarkers = c('Cortisol','Noradrenaline','Epinephrine')
+
+ordinal_regression = function(dataset){
+    # """
+    # Using oridinal regression to predict blood pressure category using mediator scores.
+    # :param (input): acute mediator score dfs
+    # :output: df of weights for each mediator
+    # """
+    
+    # creating 1 df
+    ordinal_regression_df = inner_join(bp_df[,c(1,4)], subject_info_df[,3:8]) %>%
+        # adding mediator scores data
+        inner_join(dataset[,1:3]) %>%
+        # obtaining acute biomarkers only
+        filter(Variable %in% acute_biomarkers) %>%
+        pivot_wider(names_from = Variable, values_from = Mediator_Score)
+
+    #reordering and removing some columns
+    ordinal_regression_df = ordinal_regression_df[,c(1,8:10,2)]
+
+    return(ordinal_regression_df)
+    }
+
+# calling fn
+reg_df = ordinal_regression(mediator_scores_df)
+
+head(reg_df)
+```
+
+```{r}
+#checking the number of participants for the 4 BP classes
+table(reg_df$BP_Classification)
+```
+
+```{r}
+
+three_reg_df = reg_df %>%
+    mutate(BP_Classification = ifelse(BP_Classification %in% c("1", "2"), "H", BP_Classification))
+
+two_reg_df = reg_df %>%
+    mutate(BP_Classification = ifelse(BP_Classification %in% c("1", "2", "E"), "H", BP_Classification)) 
+# turning BP into a factor
+three_reg_df$BP_Classification = factor(three_reg_df$BP_Classification, levels = c("N", "E", "H"))
+two_reg_df$BP_Classification = factor(two_reg_df$BP_Classification, levels = c("N", "H"))
+```
+
+```{r}
+table(two_reg_df$BP_Classification) #normal and hypertensive
+table(three_reg_df$BP_Classification) #normal, elevated and hypertensive
+```
+
+```{r}
+# using a shapiro wilk test to assess normality
+do.call(rbind.data.frame, apply(reg_df[,2:4], 2, shapiro.test))[,1:3] %>%
+    # adding a column that clarifies whether or not a variable is normally distributed or not
+    mutate(Normality = ifelse(p.value < 0.05, "Non-normal", "Normal"))
+```
+
+```{r}
+pslog2_df = reg_df %>%
+    mutate(across(Cortisol:Epinephrine, ~ log2(.x + 1)))
+
+head(pslog2_df)
+```
+
+```{r}
+do.call(rbind.data.frame, apply(pslog2_df[,2:4], 2, shapiro.test))[,1:3] %>%
+    mutate(Normality = ifelse(p.value < 0.05, "Non-normal", "Normal"))
+```
+
+```{r}
+# need to use the pslog2 data
+three_reg_df = three_reg_df %>%
+    mutate(across(Cortisol:Epinephrine, ~ log2(.x + 1)))
+
+two_reg_df = two_reg_df %>%
+    mutate(across(Cortisol:Epinephrine, ~ log2(.x + 1)))
+
+head(three_reg_df)
+```
+
+
+```{r}
+# 3 class outcome
+inner_join(three_reg_df, subject_info_df[,c(3,5:8)]) %>%
+
+    tbl_summary(by = BP_Classification, missing = "no", 
+    include = c(colnames(three_reg_df[2:5]), colnames(subject_info_df[5:8])), 
+              statistic = list(all_continuous() ~ "{mean} ({sd})",
+                               all_categorical() ~ "{n} ({p}%)")) %>%
+    add_n() %>% 
+    #add_overall() %>%
+    add_p(test = list(all_continuous() ~ "aov",
+                    all_categorical() ~ "chisq.test")) %>% # adding p value from anova
+    as_tibble()
+
+```
+
+```{r}
+# two class outcome
+inner_join(two_reg_df, subject_info_df[,c(3,5:8)]) %>%
+
+    tbl_summary(by = BP_Classification, missing = "no", 
+    include = c(colnames(three_reg_df[2:5]), colnames(subject_info_df[5:8])), 
+              statistic = list(all_continuous() ~ "{mean} ({sd})",
+                               all_categorical() ~ "{n} ({p}%)")) %>%
+    add_n() %>% 
+    #add_overall() %>%
+    add_p(test = list(all_continuous() ~ "t.test",
+                    all_categorical() ~ "chisq.test")) %>% # adding p value from anova
+    as_tibble()
+```
+
+```{r}
+# creating a vector of booleans that specifies whether or not the coefficient should be
+# positive (TRUE) 
+biomarker_coefficients = c(rep(TRUE, ncol(reg_df) - 2))
+
+estimateOrdWeights <- function(dataset, response, coefficients_magnitude){
+    # """
+    # Creating a function to run ordinal regression to estimate ordinal weights of mediator data based
+    # on blood pressure classification
+    # :param (input): wide df with biomarker data, response variable, magnitude of the coefficients
+    # :output: 1 df with the ordinal weights
+    # """
+    
+    # setting seed for reproducibility
+    set.seed(12)
+    
+    #get number of response levels
+    NoBins <- length(unique(dataset[[response]]))
+
+    #get number of features or slices
+    noSlices <- ncol(dataset) - 2
+    
+    # obtaining the features and converting into a matrix
+    feature_data <- as.matrix(dataset[,c(2:(ncol(dataset) - 1))])
+
+    # ordinal regression
+    # positiveID specifies whether or not each coefficient for each ind. variable should be constrained to be non-negative
+    regression_model <- ordinalNet(feature_data, dataset[[response]], positiveID = coefficients_magnitude, 
+                            # lambdaVals defines how quickly your coefficients drop to 0
+                            # keeping it at 0 tries to minimize feature reduction
+                            # maxiterout defines the number of iterations before it stops
+                         lambdaVals = 0, maxiterOut = 150)
+    testW <- regression_model$coefs[NoBins:(noSlices + NoBins - 1)]
+
+    # rescaling the coefficients so that they sum to 1
+    normalizer = 1/sum(testW)
+    rescaled_weight <- testW * normalizer
+
+    # adding the variable names back in 
+    test_weights_df = data.frame(Variable = colnames(feature_data), Coefficient = rescaled_weight) %>%
+        arrange(-Coefficient) 
+    
+    return(test_weights_df)
+}
+
+# calling fn
+three_weights_df = estimateOrdWeights(three_reg_df, 'BP_Classification', biomarker_coefficients)
+two_weights_df = estimateOrdWeights(two_reg_df, 'BP_Classification', biomarker_coefficients)
+
+three_weights_df
+two_weights_df
+
+# exporting results
+Output = ('~/Documents/0. Research Projects/2. SmokeScreen Study/R analysis/output')
+cur_date = "102824"
+
+write.xlsx(three_weights_df, paste0(Output,"/", "three_weights_df.xlsx", cur_date, ".xlsx"), rowNames = FALSE)
+
+```
+
+```{r}
+# creating 1 df
+weights_df = cbind(rbind(three_weights_df, two_weights_df), 
+                   # adding a col that specificies the number of classes of blood pressure
+                   Blood_Pressure_Class_No = c(rep(3, length(three_weights_df$Variable)), 
+                                               rep(2, length(three_weights_df$Variable)))) %>% 
+    # getting the circle positions for the text labels
+    group_by(Blood_Pressure_Class_No) %>%
+    mutate(csum = rev(cumsum(rev(Coefficient))), 
+         pos = Coefficient/2 + lead(csum, 1),
+         pos = if_else(is.na(pos), Coefficient/2, pos))
+
+head(weights_df)
+
+
+
+
+```
+
+```{r}
+options(repr.plot.width=10, repr.plot.height=10) #changing size
+
+piechart3 = ggplot(data = weights_df %>%
+       filter(Blood_Pressure_Class_No == 3), aes(x = "", y = Coefficient, fill = fct_inorder(Variable)))+
+  geom_bar(width = 1, color = 1, stat = "identity") +
+  coord_polar(theta = "y") + 
+  # removing labels for biomarkers that = 0
+  geom_label_repel(data = weights_df %>%
+                  filter(Coefficient > 0 & Blood_Pressure_Class_No == 3), 
+                  aes(x = 1, y = pos, label = paste0(Variable,"\n", round(Coefficient * 100), "%")), 
+                   size = 5, nudge_x = 0.7, show.legend = FALSE) + 
+
+  theme_void() +
+  theme(legend.position = "none") + 
+  scale_fill_npg()
+
+col_palette = pal_npg()(7)
+
+piechart2 = ggplot(data = weights_df %>%
+       filter(Blood_Pressure_Class_No == 2), aes(x = "", y = Coefficient, fill = fct_inorder(Variable)))+
+  geom_bar(width = 1, color = 1, stat = "identity") +
+  coord_polar(theta = "y") + 
+  # removing labels for biomarkers that = 0
+  geom_label_repel(data = weights_df %>%
+                  filter(Coefficient > 0 & Blood_Pressure_Class_No == 2), 
+                  aes(x = 1, y = pos, label = paste0(Variable,"\n", round(Coefficient * 100), "%")), 
+                   size = 5, nudge_x = 0.7, show.legend = FALSE) + 
+
+  theme_void() +
+  theme(legend.position = "none") +  
+  scale_fill_manual(values = col_palette[c(1,3,2)])
+
+FigureX1 = plot_grid(piechart3, piechart2)
+FigureX1
+```
+
+```{r}
+##acute stress summation 
+
+acute_stress = function(weights_df){
+    # """
+    # Calculating acute stress scores for each subject
+    # :param (input): ordinal weights dfs
+    # :output: acute stress scores df
+    # """
+    
+    # combining the mediator scores for all 63 subjects with the ordinal weights into one dataframe
+    wider_weights_df = mediator_scores_df %>%
+        filter(Variable %in% acute_biomarkers) %>%
+        mutate(Mediator_Score = log2(Mediator_Score + 1)) %>%
+        dcast(Variable ~ Subject_ID, value.var = "Mediator_Score") %>% 
+        inner_join(weights_df) %>%
+        column_to_rownames("Variable")
+
+    # multiplying the value of the mediator in each row by its respective ordinal
+    # weight found in the last column
+    multiplication_df = wider_weights_df %>%
+        dplyr::select(-Coefficient) %>%
+        mutate(across(contains("_"), ~.x*wider_weights_df$Coefficient))
+
+    # calculating acute  stress by summing by the columns
+   acute_stress_df = data.frame(Acute_Stress = apply(multiplication_df, 2, sum)) %>%
+        arrange(-Acute_Stress) %>%
+        rownames_to_column(var = "Subject_ID")
+    
+    return(acute_stress_df)
+    }
+
+# calling fn
+three_acute_stress_df = acute_stress(three_weights_df)
+two_acute_stress_df = acute_stress(two_weights_df)
+
+head(three_acute_stress_df)
+```
+
+```{r}
+#Secondary mediator score summation - old method of using +1 and -1 "weights" 
+
+#secondary_biomarkers = c('Hba1c','CRP', 'HDL','Fibrinogen')
+
+#secondary_mediator_df = mediator_scores_df %>%
+    # filtering for chronic biomarkers
+ #   filter(Variable %in% secondary_biomarkers) %>%
+    # normalizing
+  #  mutate(Mediator_Score = log2(Mediator_Score + 1)) %>%
+    # making HDL negative
+   # mutate(Mediator_Score = ifelse(Variable == "HDL", Mediator_Score * -1, Mediator_Score)) %>%
+    # summing for each subject
+    #group_by(Subject_ID) %>%
+    #summarize(Summed_Score = sum(Mediator_Score)) %>%
+   # rescaling so that these numbers fall between 0 and 1
+    #mutate(Secondary_mediators = (Summed_Score  - min(Summed_Score))/ (max(Summed_Score) - min(Summed_Score))) %>%
+    #dplyr::select(-Summed_Score) %>%
+    #arrange(-Secondary_mediators)
+
+#head(secondary_mediator_df)
+```
+
+```{r}
+
+#Secondary mediator score summation - updated approach of using +0.25 and -0.25 "weights" 
+
+secondary_biomarkers = c('Hba1c', 'CRP', 'HDL', 'Fibrinogen')
+
+secondary_mediator_df = mediator_scores_df %>%
+    # Filter for chronic biomarkers
+    filter(Variable %in% secondary_biomarkers) %>%
+    # Normalize the scores
+    mutate(Mediator_Score = log2(Mediator_Score + 1)) %>%
+    # Apply 0.25 multiplier, making HDL negative
+    mutate(Mediator_Score = ifelse(Variable == "HDL", Mediator_Score * -0.25, Mediator_Score * 0.25)) %>%
+    # Summing for each subject
+    group_by(Subject_ID) %>%
+    summarize(Secondary_Mediators = sum(Mediator_Score)) #%>%
+    # Make all values positive by adding a constant
+   # mutate(Secondary_Mediators = Secondary_Mediators ))) %>%
+    #arrange(-Secondary_Mediators)
+
+head(secondary_mediator_df)
+
+max(secondary_mediator_df$Secondary_Mediators)
+
+```
+
+```{r}
+#overall AL 
+
+allostatic_three_df = inner_join(three_acute_stress_df, secondary_mediator_df) %>%
+    mutate(Allostatic_Load = Acute_Stress + Secondary_Mediators)
+
+allostatic_two_df = inner_join(two_acute_stress_df, secondary_mediator_df) %>%
+    mutate(Allostatic_Load = Acute_Stress + Secondary_Mediators)
+
+head(allostatic_three_df)
+```
+
+```{r}
+# seeing if this data is normal
+do.call(rbind.data.frame, apply(allostatic_three_df[,2:4], 2, shapiro.test))[,1:3] %>%
+    mutate(Normality = ifelse(p.value < 0.05, "Non-normal", "Normal"))
+
+do.call(rbind.data.frame, apply(allostatic_two_df[,2:4], 2, shapiro.test))[,1:3] %>%
+    mutate(Normality = ifelse(p.value < 0.05, "Non-normal", "Normal"))
+```
+
+```{r}
+# adding in demographic info for each subject
+three_df = inner_join(allostatic_three_df, subject_info_df[,c(3,5,6,8)])
+two_df = inner_join(allostatic_two_df, subject_info_df[,c(3,5,6,8)])
+
+
+# converting into factors
+three_df$Smoking_Status = factor(three_df$Smoking_Status, levels = c("NS", "CS"))
+three_df$Sex = factor(three_df$Sex, levels = c("M", "F"))
+three_df$Race = factor(three_df$Race, levels = c("W", "B"))
+two_df$Smoking_Status = factor(two_df$Smoking_Status, levels = c("NS", "CS"))
+two_df$Sex = factor(two_df$Sex, levels = c("M", "F"))
+two_df$Race = factor(two_df$Race, levels = c("W", "B"))
+
+head(three_df)
+
+```
+
+```{r}
+leveneTest(Allostatic_Load ~ Sex, data = three_df)[1,3]
+leveneTest(Allostatic_Load ~ Race, data = three_df)[1,3]
+leveneTest(Allostatic_Load ~ Smoking_Status, data = three_df)[1,3]
+leveneTest(Allostatic_Load ~ Sex, data = two_df)[1,3]
+leveneTest(Allostatic_Load ~ Race, data = two_df)[1,3]
+leveneTest(Allostatic_Load ~ Smoking_Status, data = two_df)[1,3]
+```
+```{r}
+# looking at counts for each variable
+# smoking status
+table(three_df[,c(5)])
+chisq.test(table(three_df[,c(5)]))
+# sex
+table(three_df[,c(6)])
+chisq.test(table(three_df[,c(6)]))
+# race
+table(three_df[,c(7)])
+chisq.test(table(three_df[,c(7)]))
+# smoking status and sex
+table(three_df[,c(5:6)])
+chisq.test(table(three_df[,c(5:6)]))
+# smoking status and race
+table(three_df[,c(5,7)])
+chisq.test(table(three_df[,c(5,7)]))
+# race and sex
+table(three_df[,c(6:7)])
+chisq.test(table(three_df[,c(6:7)]))
+```
+```{r}
+#STATS
+
+# adding additional variables that are stratified
+three_df = three_df %>%
+    unite(`Smoking_Status:Race`, Smoking_Status, Race, sep = ":", remove = FALSE) %>%
+    unite(`Race:Sex`, Race, Sex, sep = ":", remove = FALSE) %>%
+    unite(`Sex:Smoking_Status`, Sex, Smoking_Status, sep = ":", remove = FALSE)
+
+two_df = two_df %>%
+    unite(`Smoking_Status:Race`, Smoking_Status, Race, sep = ":", remove = FALSE) %>%
+    unite(`Race:Sex`, Race, Sex, sep = ":", remove = FALSE) %>%
+    unite(`Sex:Smoking_Status`, Sex, Smoking_Status, sep = ":", remove = FALSE)
+
+head(three_df)
+```
+
+```{r}
+t_test_output = function(df, variable, outcome, bp_class){
+    # """
+    # Running t tests comparing each outcome (AL, acute, chronic stress) across each demographic variable. 
+
+    # :param: dataframe, demographic variable, stress variable, number of blood pressure classes
+    # :output: a dataframe containing the outcome, BP class, variable, mean difference, p value
+
+    # """
+    
+    # t test 
+    t_test = t.test(formula(paste(outcome, "~", variable)), df)
+    t_test_values = data.frame(Variable = variable, Difference = t_test$estimate[[2]] - t_test$estimate[[1]], 
+                               P_Value = t_test$p.value)
+
+    # creating df to be exported
+    values_df = data.frame(Outcome = outcome, BP_Class = bp_class, t_test_values)
+                              
+    return(values_df)
+}
+```
+
+
+```{r}
+get_anova = function(df, variable, outcome, bp_class){
+    # """
+    # Running anova tests comparing each outcome (AL, acute, chronic stress) across each stratified demographic variable. 
+
+    # :param: dataframe, stratified variable, stress variable, number of blood pressure classes
+    # :output: a dataframe containing the outcome, BP class, variable, F value, p value
+
+    # """
+
+    # runing anova
+    anova_results = aov(eval(rlang::parse_expr(outcome)) ~ eval(rlang::parse_expr(variable)), data = df) 
+    
+    # type 3 anova
+    anova_type3 = Anova(anova_results, type = 'III', contrasts = list(topic = contr.sum, sys = contr.sum))
+
+    # extract f and p values
+    anova_summary = anova_type3[2:4,3:4]
+    colnames(anova_summary) = c("F_Value", "P_Value")
+
+    # creating df to be exported
+    anova_values = data.frame(Outcome = outcome, BP_Class = bp_class, Variable = variable, anova_summary[1,])
+    
+    # removing row names
+    rownames(anova_values) = NULL
+                
+    return(anova_values)
+                
+    }
+
+```
+
+
+```{r}
+pairwise_t_test_output = function(df, stratified_variable, outcome, bp_class){
+    # """
+    # Running t tests as a post hoc to the anova tests comparing each outcome (AL, acute, chronic stress) 
+    # across each demographic variable. 
+
+    # :param: dataframe, demographic variable, stress variable, number of blood pressure classes
+    # :output: a dataframe containing the outcome, BP class, stratified variable, group 1, group 2,
+    # mean difference, p value, p adj
+
+    # """
+    
+    # pairwise t test
+    pairwise_t_test = pairwise.t.test(df[[outcome]], df[[stratified_variable]], p.adj = 'none')
+    pairwise_p_value_df = data.frame(pairwise_t_test$p.value) %>%
+        rownames_to_column(var = "group1") %>%
+        melt(variable.name = "group2", value.name = "P_Value") %>%
+        drop_na() %>%
+        mutate(P_Adj = p.adjust(as.numeric(as.character(P_Value)), method = "fdr")) %>%
+        mutate(group2 = gsub("\\.", ":", as.character(group2)))
+
+    # obtaining absolute differences between the groups
+    Difference = c()
+    for (i in 1:length(pairwise_p_value_df$group1)){
+
+        group1_df = df %>%
+            filter(eval(rlang::parse_expr(stratified_variable)) == pairwise_p_value_df$group1[i])
+
+       group2_df = df %>%
+            filter(eval(rlang::parse_expr(stratified_variable)) == pairwise_p_value_df$group2[i])
+
+        mean_diff = mean(group2_df[[outcome]]) - mean(group1_df[[outcome]])
+        Difference = c(Difference, mean_diff)
+        }
+    
+    pairwise_values = cbind(pairwise_p_value_df, Stratified_Variable = stratified_variable, Difference)
+
+    # reordering and renaming
+    colnames(pairwise_values)[c(1:2)] = c("Variable1", "Variable2")
+    pairwise_values = pairwise_values[c(5,1:2,6,3,4)]
+
+    # creating df to be exported
+    values_df = data.frame(Outcome = outcome, BP_Class = bp_class, pairwise_values)                      
+
+    return(values_df)
+}
+```
+
+
+```{r}
+# calling t test fn for acute stress
+three_t_test_smoking_race_acute = t_test_output(three_df, 'Smoking_Status','Acute_Stress', "Three")
+three_t_test_smoking_sex_acute = t_test_output(three_df, 'Sex','Acute_Stress', "Three")
+three_t_test_sex_race_acute = t_test_output(three_df, 'Race', 'Acute_Stress', "Three")
+two_t_test_smoking_race_acute = t_test_output(two_df, 'Smoking_Status',  'Acute_Stress', "Two")
+two_t_test_smoking_sex_acute = t_test_output(two_df, 'Sex', 'Acute_Stress',  "Two")
+two_t_test_sex_race_acute = t_test_output(two_df, 'Race',  'Acute_Stress', "Two")
+
+# creating 1 df
+acute_t_test_df = unique(rbind(three_t_test_smoking_race_acute, three_t_test_smoking_sex_acute,
+                            three_t_test_sex_race_acute, two_t_test_smoking_race_acute, 
+                            two_t_test_smoking_sex_acute, two_t_test_sex_race_acute))
+```
+
+
+```{r}
+# calling anova fn acute stress 
+three_anova_smoking_race_acute = get_anova(three_df, 'Smoking_Status:Race', 'Acute_Stress', "Three")
+three_anova_smoking_sex_acute = get_anova(three_df, 'Sex:Smoking_Status', 'Acute_Stress', "Three")
+three_anova_sex_race_acute = get_anova(three_df, 'Race:Sex', 'Acute_Stress', "Three")
+two_anova_smoking_race_acute = get_anova(two_df, 'Smoking_Status:Race', 'Acute_Stress', "Two")
+two_anova_smoking_sex_acute = get_anova(two_df, 'Sex:Smoking_Status', 'Acute_Stress', "Two")
+two_anova_sex_race_acute = get_anova(two_df, 'Race:Sex', 'Acute_Stress', "Two")
+
+# creating 1 df
+acute_anova_df = unique(rbind(three_anova_smoking_race_acute, three_anova_smoking_sex_acute,
+                            three_anova_sex_race_acute, two_anova_smoking_race_acute, two_anova_smoking_sex_acute,
+                            two_anova_sex_race_acute))
+
+```
+
+
+```{r}
+# calling pairwise fn for acute stress
+three_t_test_smoking_race_acute = pairwise_t_test_output(three_df, 'Smoking_Status:Race', 'Acute_Stress', "Three")
+three_t_test_smoking_sex_acute = pairwise_t_test_output(three_df,'Sex:Smoking_Status', 'Acute_Stress', "Three")
+three_t_test_sex_race_acute = pairwise_t_test_output(three_df,'Race:Sex', 'Acute_Stress', "Three")
+two_t_test_smoking_race_acute = pairwise_t_test_output(two_df, 'Smoking_Status:Race', 'Acute_Stress', "Two")
+two_t_test_smoking_sex_acute = pairwise_t_test_output(two_df, 'Sex:Smoking_Status', 'Acute_Stress',  "Two")
+two_t_test_sex_race_acute = pairwise_t_test_output(two_df, 'Race:Sex', 'Acute_Stress', "Two")
+
+# creating 1 df
+acute_pairwise_t_test_df = unique(rbind(three_t_test_smoking_race_acute, three_t_test_smoking_sex_acute,
+                            three_t_test_sex_race_acute, two_t_test_smoking_race_acute, two_t_test_smoking_sex_acute,
+                            two_t_test_sex_race_acute)) 
+```
+
+
+```{r}
+# viewing sig results for acute stress scores
+acute_t_test_df %>%
+    filter(P_Value < 0.1) 
+
+acute_anova_df %>%
+    filter(P_Value < 0.1)
+
+acute_pairwise_t_test_df %>%
+    filter(P_Adj < 0.1)
+```
+
+
+```{r}
+
+# calling t test fn secondary mediators t test
+t_test_smoking_secondary_mediators = t_test_output(three_df, 'Smoking_Status','Secondary_Mediators', NA)
+t_test_sex_secondary_mediators = t_test_output(three_df, 'Sex', 'Secondary_Mediators', NA)
+t_test_race_secondary_mediators = t_test_output(three_df, 'Race', 'Secondary_Mediators', NA)
+
+# creating 1 df
+secondary_mediator_t_test_df = unique(rbind(t_test_smoking_secondary_mediators, t_test_sex_secondary_mediators, t_test_race_secondary_mediators)) 
+
+```
+
+```{r}
+# calling anova fn secondary mediators
+anova_smoking_race_secondary = get_anova(three_df, 'Smoking_Status:Race', 'Secondary_Mediators', NA)
+anova_smoking_sex_secondary = get_anova(three_df, 'Sex:Smoking_Status', 'Secondary_Mediators', NA)
+anova_sex_race_secondary = get_anova(three_df, 'Race:Sex', 'Secondary_Mediators', NA)
+
+# creating 1 df
+secondary_mediator_anova_df = unique(rbind(anova_smoking_race_secondary, anova_smoking_sex_secondary,
+                            anova_sex_race_secondary))
+```
+
+```{r}
+# calling pairwise fn secondary mediators
+t_test_smoking_race_secondary = pairwise_t_test_output(three_df, 'Smoking_Status:Race', 'Secondary_Mediators', NA)
+t_test_smoking_sex_secondary = pairwise_t_test_output(three_df, 'Sex:Smoking_Status', 'Secondary_Mediators', NA)
+t_test_sex_race_secondary = pairwise_t_test_output(three_df, 'Race:Sex', 'Secondary_Mediators', NA)
+
+# creating 1 df
+secondary_pairwise_t_test_df = unique(rbind(t_test_smoking_race_secondary, t_test_smoking_sex_secondary,
+                            t_test_sex_race_secondary)) 
+```
+
+```{r}
+# viewing sig results for secondary mediators
+secondary_mediator_t_test_df %>%
+    filter(P_Value < 0.1)
+
+secondary_mediator_anova_df %>%
+    filter(P_Value < 0.1)
+
+# viewing sig pairwise results
+secondary_pairwise_t_test_df %>%
+    filter(P_Adj < 0.1)
+
+```
+
+
+
+```{r}
+# calling t test fn doe allostatic laod
+three_t_test_smoking_AL = t_test_output(three_df, 'Smoking_Status', 'Allostatic_Load', "Three")
+three_t_test_sex_AL = t_test_output(three_df, 'Sex', 'Allostatic_Load', "Three")
+three_t_test_race_AL = t_test_output(three_df, 'Race', 'Allostatic_Load', "Three")
+two_t_test_smoking_AL = t_test_output(two_df, 'Smoking_Status', 'Allostatic_Load', "Two")
+two_t_test_sex_AL = t_test_output(two_df, 'Sex', 'Allostatic_Load',  "Two")
+two_t_test_race_AL = t_test_output(two_df, 'Race', 'Allostatic_Load', "Two")
+
+# creating 1 df
+allostatic_t_test_df = unique(rbind(three_t_test_smoking_AL, three_t_test_sex_AL,three_t_test_race_AL, 
+                                    two_t_test_smoking_AL, two_t_test_sex_AL, two_t_test_race_AL)) 
+```
+
+```{r}
+
+# calling anova fn for allostatic load
+three_anova_smoking_race_AL = get_anova(three_df, 'Smoking_Status:Race', 'Allostatic_Load', "Three")
+three_anova_smoking_sex_AL = get_anova(three_df, 'Sex:Smoking_Status', 'Allostatic_Load', "Three")
+three_anova_sex_race_AL = get_anova(three_df, 'Race:Sex', 'Allostatic_Load', "Three")
+two_anova_smoking_race_AL = get_anova(two_df, 'Smoking_Status:Race', 'Allostatic_Load', "Two")
+two_anova_smoking_sex_AL = get_anova(two_df, 'Sex:Smoking_Status', 'Allostatic_Load', "Two")
+two_anova_sex_race_AL = get_anova(two_df, 'Race:Sex', 'Allostatic_Load', "Two")
+
+# creating 1 df
+allostatic_anova_df = unique(rbind(three_anova_smoking_race_AL, three_anova_smoking_sex_AL,
+                            three_anova_sex_race_AL, two_anova_smoking_race_AL, two_anova_smoking_sex_AL,
+                            two_anova_sex_race_AL))
+
+```
+
+
+```{r}
+# calling pairwise t test fn for allostatic load score
+three_t_test_smoking_race_AL = pairwise_t_test_output(three_df, 'Smoking_Status:Race', 'Allostatic_Load', "Three")
+three_t_test_smoking_sex_AL = pairwise_t_test_output(three_df,'Sex:Smoking_Status', 'Allostatic_Load', "Three")
+three_t_test_sex_race_AL = pairwise_t_test_output(three_df,'Race:Sex', 'Allostatic_Load', "Three")
+two_t_test_smoking_race_AL = pairwise_t_test_output(two_df, 'Smoking_Status:Race', 'Allostatic_Load', "Two")
+two_t_test_smoking_sex_AL = pairwise_t_test_output(two_df, 'Sex:Smoking_Status', 'Allostatic_Load',  "Two")
+two_t_test_sex_race_AL = pairwise_t_test_output(two_df, 'Race:Sex', 'Allostatic_Load', "Two")
+
+# creating 1 df
+allostatic_pairwise_t_test_df = unique(rbind(three_t_test_smoking_race_AL, three_t_test_smoking_sex_AL,
+                            three_t_test_sex_race_AL, two_t_test_smoking_race_AL, two_t_test_smoking_sex_AL,
+                            two_t_test_sex_race_AL)) 
+```
+
+
+```{r}
+# viewing sig results for allostatic load
+allostatic_t_test_df %>%
+    filter(P_Value < 0.1) 
+
+allostatic_anova_df %>%
+    filter(P_Value < 0.1)
+
+allostatic_pairwise_t_test_df %>%
+    filter(P_Adj < 0.1)
+
+```
+
+
+```{r}
+# creating a df with cleaned stratified names from plotting
+cleaned_three_df = three_df %>%
+    mutate(Race_Sex = ifelse(`Race:Sex` == "W:M", 'White Males', 
+                             ifelse(`Race:Sex` == "W:F", 'White Females', 
+                                   ifelse(`Race:Sex` == "B:M", 'Black Males', 
+                                         ifelse(`Race:Sex` == "B:F", 'Black Females', 
+                                                NA))))) %>%
+   mutate(Sex_Smoking_Status = ifelse(`Sex:Smoking_Status` == "M:NS", 'Male NS', 
+                             ifelse(`Sex:Smoking_Status` == "F:NS", 'Female NS', 
+                                   ifelse(`Sex:Smoking_Status` == "M:CS", 'Male CS', 
+                                         ifelse(`Sex:Smoking_Status` == "F:CS", 'Female CS', 
+                                                NA))))) %>%
+   mutate(Smoking_Status_Race = ifelse(`Smoking_Status:Race` == "NS:W", 'White NS', 
+                             ifelse(`Smoking_Status:Race` == "NS:B", 'Black NS', 
+                                   ifelse(`Smoking_Status:Race` == "CS:W", 'White CS', 
+                                         ifelse(`Smoking_Status:Race` == "CS:B", 'Black CS', 
+                                                NA)))))
+
+head(cleaned_three_df)
+```
+
+```{r}
+t_test_p_values_AL_race_sex = compare_means(Allostatic_Load ~ Race_Sex, data = cleaned_three_df, 
+                                         method = "t.test", p.adjust.method = 'fdr') %>%
+    # basing the p.signif off of adjusted p values
+    mutate(p.signif = ifelse(p.adj < 0.0001, '****', 
+                             ifelse(p.adj >= 0.0001 & p.adj < 0.001, '***',
+                                   ifelse(p.adj >= 0.001 & p.adj < 0.01, '**',
+                                         ifelse(p.adj >= 0.01 & p.adj < 0.05, '*', 
+                                                ifelse(p.adj >= 0.05 & p.adj < 0.1, '.', 
+                                                    'ns')))))) %>%
+    # manually adding the y position
+    mutate(y.position = c(1.2, 1, 1, 1.4, 1, 1.2))
+
+# # changing some of the p significant values since the t test results don't match
+# # what I initially got
+t_test_p_values_AL_race_sex[1,7] = '.'
+t_test_p_values_AL_race_sex[4,7] = '**'
+
+t_test_p_values_AL_race_sex
+```
+
+```{r}
+options(repr.plot.width=8, repr.plot.height=6) #changing size
+
+
+col_palette1 = wes_palette("Darjeeling1", 4, type = "discrete")
+
+fig3g = ggplot(data = cleaned_three_df, aes(x = Race_Sex, y = Allostatic_Load, color = Race_Sex)) + 
+  geom_boxplot() + 
+  geom_point(position = position_jitter(w = 0.1)) + 
+  ylim(NA, 1.6) + # adding more space for p value significance
+
+  # overall anova p value
+  stat_anova_test(wid = "Race_Sex", p.adjust.method = "none", label = "p = {p.format}", 
+                     label.x.npc = "right", size = 7, label.y = 1.5, label.x = 3.9) +
+
+  # adjusted p value
+  stat_pvalue_manual(t_test_p_values_AL_race_sex %>%
+                         filter(p.signif != 'ns'), label = "p.signif", size = 13) + 
+
+theme_light() + 
+  theme(axis.line = element_line(colour = "black"), #making x and y axes black
+        axis.text = element_text(size = 12), #changing size of x axis labels
+        legend.position = 'none', # removes legend
+        plot.margin = unit(c(0,0,2,2), "lines"), # adding space at the bottom of the figure
+        axis.title = element_text(face = "bold", size = rel(1.5))) + #changes axis titles
+         
+  labs(x = 'Race & Sex Stratification', y = 'Allostatic Load') + #changing axis labels 
+  scale_colour_manual(values = col_palette1) 
+
+fig3g
+```
+
+
+```{r}
+t_test_p_values_AL_race_sex = compare_means(Allostatic_Load ~ Race_Sex, data = cleaned_three_df, 
+                                         method = "t.test", p.adjust.method = 'fdr') %>%
+    # basing the p.signif off of adjusted p values
+    mutate(p.signif = ifelse(p.adj < 0.0001, '****', 
+                             ifelse(p.adj >= 0.0001 & p.adj < 0.001, '***',
+                                   ifelse(p.adj >= 0.001 & p.adj < 0.01, '**',
+                                         ifelse(p.adj >= 0.01 & p.adj < 0.05, '*', 
+                                                ifelse(p.adj >= 0.05 & p.adj < 0.1, '.', 
+                                                    'ns')))))) %>%
+    # manually adding the y position
+    mutate(y.position = c(1.4, 1, 1, 1.6, 1, 1.4))
+
+
+t_test_p_values_AL_race_sex
+```
+
+```{r}
+#significance for allostatic load
+t_test_p_values_AL_smoking_race = compare_means(Allostatic_Load ~ Smoking_Status_Race, data = cleaned_three_df, 
+                                         method = "t.test", p.adjust.method = 'fdr') %>%
+    # basing the p.signif off of adjusted p values
+    mutate(p.signif = ifelse(p.adj < 0.0001, '****', 
+                             ifelse(p.adj >= 0.0001 & p.adj < 0.001, '***',
+                                   ifelse(p.adj >= 0.001 & p.adj < 0.01, '**',
+                                         ifelse(p.adj >= 0.01 & p.adj < 0.05, '*', 
+                                                ifelse(p.adj >= 0.05 & p.adj < 0.1, '.', 
+                                                    'ns')))))) %>%
+    # manually adding the y position
+    mutate(y.position = c(1, 1, .9, 0.95, 1, 1))
+
+
+t_test_p_values_AL_smoking_race
+```
+
+
+```{r}
+##plotting allostatic load x smoking status and race
+col_palette2 = wes_palette("Darjeeling2", 5, type = "discrete")
+
+fig3h = ggplot(data = cleaned_three_df, aes(x = Smoking_Status_Race, y = Allostatic_Load, color = Smoking_Status_Race)) + 
+  geom_boxplot() + 
+  geom_point(position = position_jitter(w = 0.1)) + 
+  ylim(NA, 1.3) + # adding more space for p value significance
+
+  # overall anova p value
+  stat_anova_test(wid = "Smoking_Status_Race", p.adjust.method = "none", label = "p = {p.format}", 
+                     label.x.npc = "right", size = 7, label.y = 1.2, label.x= 3.7) +
+
+  # adjusted p value
+  stat_pvalue_manual(t_test_p_values_AL_smoking_race %>%
+                         filter(p.signif != 'ns'), label = "p.signif", size = 13) + 
+
+  theme_light() + 
+  theme(axis.line = element_line(colour = "black"), #making x and y axes black
+        axis.text = element_text(size = 12), #changing size of x axis labels
+        legend.position = 'none', # removes legend
+        plot.margin = unit(c(0,0,2,2), "lines"), # adding space at the bottom of the figure
+        axis.title = element_text(face = "bold", size = rel(1.5))) + #changes axis titles
+         
+  labs(x = 'Smoking Status & Race Stratification', y = 'Allostatic Load') + #changing axis labels 
+  scale_colour_manual(values = col_palette2[2:5])
+
+fig3h
+```
+```{r}
+t_test_p_values_allostatic_smoking_sex = compare_means(Allostatic_Load ~ Sex_Smoking_Status, data = cleaned_three_df, 
+                                         method = "t.test", p.adjust.method = 'fdr') %>%
+    # basing the p.signif off of adjusted p values
+    mutate(p.signif = ifelse(p.adj < 0.0001, '****', 
+                             ifelse(p.adj >= 0.0001 & p.adj < 0.001, '***',
+                                   ifelse(p.adj >= 0.001 & p.adj < 0.01, '**',
+                                         ifelse(p.adj >= 0.01 & p.adj < 0.05, '*', 
+                                                ifelse(p.adj >= 0.05 & p.adj < 0.1, '.', 
+                                                    'ns')))))) %>%
+    # manually adding the y position
+    mutate(y.position = c(1, 1, 1, 1, 0.7, 0.9))
+
+t_test_p_values_allostatic_smoking_sex
+```
+
+
+```{r}
+col_palette3 = wes_palette("Cavalcanti1", 4, type = "discrete")
+
+fig3i = ggplot(data = cleaned_three_df, aes(x = Sex_Smoking_Status, y = Allostatic_Load, color = Sex_Smoking_Status)) + 
+  geom_boxplot() + 
+  geom_point(position = position_jitter(w = 0.1)) + 
+
+  # adding more space for p value significance
+  ylim(NA, 1) + 
+
+  # overall anova p value
+  stat_anova_test(wid = "Sex_Smoking_Status", p.adjust.method = "none", label = "p = {p.format}", 
+                     label.x.npc = "right", size = 7, label.y = 0.9, label.x = 3.7) +
+
+  # adjusted p value
+  stat_pvalue_manual(t_test_p_values_allostatic_smoking_sex %>%
+                         filter(p.signif != 'ns'), label = "p.signif", size = 13) + 
+
+theme_light() + 
+  theme(axis.line = element_line(colour = "black"), #making x and y axes black
+        axis.text = element_text(size = 12), #changing size of x axis labels
+        legend.position = 'none', # removes legend
+        plot.margin = unit(c(0,0,2,2), "lines"), # adding space at the bottom of the figure
+        axis.title = element_text(face = "bold", size = rel(1.5))) + #changes axis titles
+         
+  labs(x = 'Sex & Smoking Status Stratification', y = 'Allostatic Load') + #changing axis labels 
+  scale_colour_manual(values = col_palette3)
+
+fig3i
+
+```
+
+```{r}
+t_test_p_values_acute_race_sex = compare_means(Acute_Stress ~ Race_Sex, data = cleaned_three_df, 
+                                         method = "t.test", p.adjust.method = 'fdr') %>%
+    # basing the p.signif off of adjusted p values
+    mutate(p.signif = ifelse(p.adj < 0.0001, '****', 
+                             ifelse(p.adj >= 0.0001 & p.adj < 0.001, '***',
+                                   ifelse(p.adj >= 0.001 & p.adj < 0.01, '**',
+                                         ifelse(p.adj >= 0.01 & p.adj < 0.05, '*', 
+                                                ifelse(p.adj >= 0.05 & p.adj < 0.1, '.', 
+                                                    'ns')))))) %>%
+    # manually adding the y position
+    mutate(y.position = c(0.9, 1.1, 1, 1, 1, 1))
+
+
+t_test_p_values_acute_race_sex
+```
+
+
+```{r}
+fig3a = ggplot(data = cleaned_three_df, aes(x = Race_Sex, y = Acute_Stress, color = Race_Sex)) + 
+  geom_boxplot() + 
+  geom_point(position = position_jitter(w = 0.1)) + 
+  ylim(NA, 1) + # adding more space for p value significance
+
+  # overall anova p value
+  stat_anova_test(wid = "Race_Sex", p.adjust.method = "none", label = "p = {p.format}", 
+                     label.x.npc = "right", size = 7, label.y = 0.9) +
+
+  # adjusted p value
+  stat_pvalue_manual(t_test_p_values_acute_race_sex %>%
+                         filter(p.signif != 'ns'), label = "p.signif", size = 13) + 
+
+  theme_light() + 
+  theme(axis.line = element_line(colour = "black"), #making x and y axes black
+        axis.text = element_text(size = 12), #changing size of x axis labels
+        legend.position = 'none', # removes legend
+        plot.margin = unit(c(0,0,2,2), "lines"), # adding space at the bottom of the figure
+        axis.title = element_text(face = "bold", size = rel(1.5))) + #changes axis titles
+         
+  labs(x = 'Race & Sex Stratification', y = 'Acute Stress') + #changing axis labels 
+  scale_colour_manual(values = col_palette1)
+
+fig3a
+```
+
+
+```{r}
+t_test_p_values_acute_smoking_sex = compare_means(Acute_Stress ~ Sex_Smoking_Status, data = cleaned_three_df, 
+                                         method = "t.test", p.adjust.method = 'fdr') %>%
+    # basing the p.signif off of adjusted p values
+    mutate(p.signif = ifelse(p.adj < 0.0001, '****', 
+                             ifelse(p.adj >= 0.0001 & p.adj < 0.001, '***',
+                                   ifelse(p.adj >= 0.001 & p.adj < 0.01, '**',
+                                         ifelse(p.adj >= 0.01 & p.adj < 0.05, '*', 
+                                                ifelse(p.adj >= 0.05 & p.adj < 0.1, '.', 
+                                                    'ns')))))) %>%
+    # manually adding the y position
+    mutate(y.position = c(1, 1, 1, 1, 0.7, 0.9))
+
+t_test_p_values_acute_smoking_sex
+```
+
+
+```{r}
+col_palette3 = wes_palette("Cavalcanti1", 4, type = "discrete")
+
+fig3b = ggplot(data = cleaned_three_df, aes(x = Sex_Smoking_Status, y = Acute_Stress, color = Sex_Smoking_Status)) + 
+  geom_boxplot() + 
+  geom_point(position = position_jitter(w = 0.1)) + 
+
+  # adding more space for p value significance
+  ylim(NA, 1) + 
+
+  # overall anova p value
+  stat_anova_test(wid = "Sex_Smoking_Status", p.adjust.method = "none", label = "p = {p.format}", 
+                     label.x.npc = "right", size = 7, label.y = 0.9, label.x = 3.7) +
+
+  # adjusted p value
+  stat_pvalue_manual(t_test_p_values_acute_smoking_sex %>%
+                         filter(p.signif != 'ns'), label = "p.signif", size = 13) + 
+
+theme_light() + 
+  theme(axis.line = element_line(colour = "black"), #making x and y axes black
+        axis.text = element_text(size = 12), #changing size of x axis labels
+        legend.position = 'none', # removes legend
+        plot.margin = unit(c(0,0,2,2), "lines"), # adding space at the bottom of the figure
+        axis.title = element_text(face = "bold", size = rel(1.5))) + #changes axis titles
+         
+  labs(x = 'Sex & Smoking Status Stratification', y = 'Acute Stress') + #changing axis labels 
+  scale_colour_manual(values = col_palette3)
+
+fig3b
+
+```
+
+```{r}
+t_test_p_values_acute_smoking_sex = compare_means(Acute_Stress ~ Sex_Smoking_Status, data = cleaned_three_df, 
+                                         method = "t.test", p.adjust.method = 'fdr') %>%
+    # basing the p.signif off of adjusted p values
+    mutate(p.signif = ifelse(p.adj < 0.0001, '****', 
+                             ifelse(p.adj >= 0.0001 & p.adj < 0.001, '***',
+                                   ifelse(p.adj >= 0.001 & p.adj < 0.01, '**',
+                                         ifelse(p.adj >= 0.01 & p.adj < 0.05, '*', 
+                                                ifelse(p.adj >= 0.05 & p.adj < 0.1, '.', 
+                                                    'ns')))))) %>%
+    # manually adding the y position
+    mutate(y.position = c(1, 1, 1, 1, 0.7, 0.9))
+
+t_test_p_values_acute_smoking_sex
+```
+
+```{r}
+
+fig3c = ggplot(data = cleaned_three_df, aes(x = Sex_Smoking_Status, y = Acute_Stress, color = Sex_Smoking_Status)) + 
+  geom_boxplot() + 
+  geom_point(position = position_jitter(w = 0.1)) + 
+
+  # adding more space for p value significance
+  ylim(NA, 1) + 
+
+  # overall anova p value
+  stat_anova_test(wid = "Sex_Smoking_Status", p.adjust.method = "none", label = "p = {p.format}", 
+                     label.x.npc = "right", size = 7, label.y = 0.9, label.x = 3.7) +
+
+  # adjusted p value
+  stat_pvalue_manual(t_test_p_values_acute_smoking_sex %>%
+                         filter(p.signif != 'ns'), label = "p.signif", size = 13) + 
+
+theme_light() + 
+  theme(axis.line = element_line(colour = "black"), #making x and y axes black
+        axis.text = element_text(size = 12), #changing size of x axis labels
+        legend.position = 'none', # removes legend
+        plot.margin = unit(c(0,0,2,2), "lines"), # adding space at the bottom of the figure
+        axis.title = element_text(face = "bold", size = rel(1.5))) + #changes axis titles
+         
+  labs(x = 'Sex & Smoking Status Stratification', y = 'Acute Stress') + #changing axis labels 
+  scale_colour_manual(values = col_palette3)
+
+fig3c
+```
+
+
+```{r}
+t_test_p_values_secondary_race_sex = compare_means(Secondary_Mediators ~ Race_Sex, data = cleaned_three_df, 
+                                         method = "t.test", p.adjust.method = 'fdr') %>%
+    # basing the p.signif off of adjusted p values
+    mutate(p.signif = ifelse(p.adj < 0.0001, '****', 
+                             ifelse(p.adj >= 0.0001 & p.adj < 0.001, '***',
+                                   ifelse(p.adj >= 0.001 & p.adj < 0.01, '**',
+                                         ifelse(p.adj >= 0.01 & p.adj < 0.05, '*', 
+                                                ifelse(p.adj >= 0.05 & p.adj < 0.1, '.', 
+                                                    'ns')))))) %>%
+    # manually adding the y position
+    mutate(y.position = c(1, 1, 1, .65, 1, 1))
+
+t_test_p_values_secondary_race_sex
+```
+
+```{r}
+fig3d = ggplot(data = cleaned_three_df, aes(x = Race_Sex, y = Secondary_Mediators, color = Race_Sex)) + 
+  geom_boxplot() + 
+  geom_point(position = position_jitter(w = 0.1)) + 
+  ylim(NA, 1) + # adding more space for p value significance
+
+  # overall anova p value
+  stat_anova_test(wid = "Race_Sex", p.adjust.method = "none", label = "p = {p.format}", 
+                     label.x.npc = "right", size = 7, label.y = .9, label.x = 3.7) +
+
+  # adjusted p value
+  stat_pvalue_manual(t_test_p_values_secondary_race_sex %>%
+                         filter(p.signif != 'ns'), label = "p.signif", size = 13) + 
+
+  theme_light() + 
+  theme(axis.line = element_line(colour = "black"), #making x and y axes black
+        axis.text = element_text(size = 12), #changing size of x axis labels
+        legend.position = 'none', # removes legend
+        plot.margin = unit(c(0,0,2,2), "lines"), # adding space at the bottom of the figure
+        axis.title = element_text(face = "bold", size = rel(1.5))) + #changes axis titles
+         
+  labs(x = 'Race & Sex Stratification', y = 'Secondary Mediators') + #changing axis labels 
+  scale_colour_manual(values = col_palette1)
+
+fig3d
+```
+
+```{r}
+t_test_p_values_secondary_smoking_race = compare_means(Secondary_Mediators ~ Smoking_Status_Race, data = cleaned_three_df, 
+                                         method = "t.test", p.adjust.method = 'fdr') %>%
+    # basing the p.signif off of adjusted p values
+    mutate(p.signif = ifelse(p.adj < 0.0001, '****', 
+                             ifelse(p.adj >= 0.0001 & p.adj < 0.001, '***',
+                                   ifelse(p.adj >= 0.001 & p.adj < 0.01, '**',
+                                         ifelse(p.adj >= 0.01 & p.adj < 0.05, '*', 
+                                                ifelse(p.adj >= 0.05 & p.adj < 0.1, '.', 
+                                                    'ns')))))) %>%
+    # manually adding the y position
+    mutate(y.position = c(.65, .7, 1, .85, 1, 1))
+
+t_test_p_values_secondary_smoking_race
+```
+
+
+```{r}
+
+fig3e = ggplot(data = cleaned_three_df, aes(x = Smoking_Status_Race, y = Secondary_Mediators, color = Smoking_Status_Race)) + 
+  geom_boxplot() + 
+  geom_point(position = position_jitter(w = 0.1)) + 
+
+  # adding more space for p value significance
+  ylim(NA, 1) + 
+
+  # overall anova p value
+  stat_anova_test(wid = "Smoking_Status_Race", p.adjust.method = "none", label = "p = {p.format}", 
+                     label.x.npc = "right", size = 7, label.y = 0.9, label.x = 3.7) +
+  
+
+  # adjusted p value
+  stat_pvalue_manual(t_test_p_values_secondary_smoking_race %>%
+                         filter(p.signif != 'ns'), label = "p.signif", size = 13) + 
+
+theme_light() + 
+  theme(axis.line = element_line(colour = "black"), #making x and y axes black
+        axis.text = element_text(size = 12), #changing size of x axis labels
+        legend.position = 'none', # removes legend
+        plot.margin = unit(c(0,0,2,2), "lines"), # adding space at the bottom of the figure
+        axis.title = element_text(face = "bold", size = rel(1.5))) + #changes axis titles
+         
+  labs(x = 'Smoking Status & Race Stratification', y = 'Secondary Mediators')  + #changing axis labels 
+  scale_colour_manual(values = col_palette2[2:5])
+
+fig3e
+```
+
+
+
+```{r}
+t_test_p_values_secondary_smoking_sex = compare_means(Secondary_Mediators ~ Sex_Smoking_Status, data = cleaned_three_df, 
+                                         method = "t.test", p.adjust.method = 'fdr') %>%
+    # basing the p.signif off of adjusted p values
+    mutate(p.signif = ifelse(p.adj < 0.0001, '****', 
+                             ifelse(p.adj >= 0.0001 & p.adj < 0.001, '***',
+                                   ifelse(p.adj >= 0.001 & p.adj < 0.01, '**',
+                                         ifelse(p.adj >= 0.01 & p.adj < 0.05, '*', 
+                                                ifelse(p.adj >= 0.05 & p.adj < 0.1, '.', 
+                                                    'ns')))))) %>%
+    # manually adding the y position
+    mutate(y.position = c(1, 1, 1, 1, 0.7, 0.9))
+
+t_test_p_values_secondary_smoking_sex
+```
+
+```{r}
+col_palette3 = wes_palette("Cavalcanti1", 4, type = "discrete")
+
+fig3f = ggplot(data = cleaned_three_df, aes(x = Sex_Smoking_Status, y = Secondary_Mediators, color = Sex_Smoking_Status)) + 
+  geom_boxplot() + 
+  geom_point(position = position_jitter(w = 0.1)) + 
+
+  # adding more space for p value significance
+  ylim(NA, 1) + 
+
+  # overall anova p value
+  stat_anova_test(wid = "Sex_Smoking_Status", p.adjust.method = "none", label = "p = {p.format}", 
+                     label.x.npc = "right", size = 7, label.y = 0.9, label.x = 3.7) +
+
+  # adjusted p value
+  stat_pvalue_manual(t_test_p_values_secondary_smoking_sex %>%
+                         filter(p.signif != 'ns'), label = "p.signif", size = 13) + 
+
+theme_light() + 
+  theme(axis.line = element_line(colour = "black"), #making x and y axes black
+        axis.text = element_text(size = 12), #changing size of x axis labels
+        legend.position = 'none', # removes legend
+        plot.margin = unit(c(0,0,2,2), "lines"), # adding space at the bottom of the figure
+        axis.title = element_text(face = "bold", size = rel(1.5))) + #changes axis titles
+         
+  labs(x = 'Sex & Smoking Status Stratification', y = 'Secondary Mediators') + #changing axis labels 
+  scale_colour_manual(values = col_palette3)
+
+fig3f
+
+```
+
+
+
+```{r}
+
+# combining dfs for export
+t_test_df = rbind(allostatic_t_test_df, acute_t_test_df, secondary_mediator_t_test_df)
+anova_df = rbind(allostatic_anova_df, acute_anova_df, secondary_mediator_anova_df)
+pairwise_t_test_df = rbind(allostatic_pairwise_t_test_df, acute_pairwise_t_test_df, secondary_pairwise_t_test_df)
+subject_scores_df = inner_join(allostatic_three_df %>%
+                              rename(Acute_Stress_Three = Acute_Stress, Allostatic_Load_Three = Allostatic_Load), 
+                              allostatic_two_df %>%
+                              rename(Acute_Stress_Two = Acute_Stress, Allostatic_Load_Two = Allostatic_Load))
+
+head(t_test_df)
+head(anova_df)
+head(pairwise_t_test_df)
+head(subject_scores_df)
+
+
+
+```
+
+```{r}
+longer_subject_scores_df = subject_scores_df %>%
+    pivot_longer(cols = 2:6, names_to = "Variable", values_to = "Value") %>%
+    # removing the scores that are based on the two class weights
+    filter(!grepl("Two", Variable)) %>%
+    # adding a col that specifies the group
+    inner_join(subject_info_df[,c(3,5:8)]) %>%
+    # cleaning up names
+    mutate(Variable = gsub("_Three", "", Variable),
+          Variable = gsub("_", " ", Variable),
+          Smoking_Status = ifelse(Smoking_Status == 'NS', "Non-Smokers", "Cigarette Smokers"),
+          Sex = ifelse(Sex == 'M', "Males", "Females"),
+          Race = ifelse(Race == 'W', "White", "Black"))
+
+# putting variables into a factor for ordering
+longer_subject_scores_df$Variable = factor(longer_subject_scores_df$Variable, 
+                                           levels = c("Acute Stress", "Secondary Mediators", "Allostatic Load"))
+longer_subject_scores_df$Sex = factor(longer_subject_scores_df$Sex, 
+                                           levels = c("Males", "Females"))
+longer_subject_scores_df$Smoking_Status = factor(longer_subject_scores_df$Smoking_Status, 
+                                           levels = c("Non-Smokers", "Cigarette Smokers"))
+
+head(longer_subject_scores_df)
+```
+```{r}
+
+stat_test_race = longer_subject_scores_df %>%
+    group_by(Variable) %>%
+    t_test(Value ~ Race) %>%
+    add_significance(cutpoints = c(0, 1e-04, 0.001, 0.01, 0.05, 0.1, 1),
+                    symbols = c("****", "***", "**", "*", ".", "ns")) %>%
+    # manually adding the y position
+    mutate(y.position = c(1, 1.1, 1.4))
+
+stat_test_sex = longer_subject_scores_df %>%
+    group_by(Variable) %>%
+    t_test(Value ~ Sex) %>%
+    add_significance(cutpoints = c(0, 1e-04, 0.001, 0.01, 0.05, 0.1, 1),
+                    symbols = c("****", "***", "**", "*", ".", "ns")) %>%
+    # manually adding the y position
+    mutate(y.position = c(1, 1.1, 1.4))
+
+stat_test_smoking = longer_subject_scores_df %>%
+    group_by(Variable) %>%
+    t_test(Value ~ Smoking_Status) %>%
+    add_significance(cutpoints = c(0, 1e-04, 0.001, 0.01, 0.05, 0.1, 1),
+                    symbols = c("****", "***", "**", "*", ".", "ns")) %>%
+    # manually adding the y position
+    mutate(y.position = c(0.9, 1.1, 1.4))
+
+stat_test_race
+```
+
+```{r}
+#plotting t test copmarisons for race, sex and smoking status
+
+race_boxplots = ggplot(data = longer_subject_scores_df, aes(x = Race, y = Value)) + 
+  geom_boxplot(aes(fill = Race)) + 
+  geom_point(position = position_jitter(w = 0.1)) + 
+
+  facet_wrap(~Variable, scale = 'free_y') +
+
+  # t test p value
+  stat_pvalue_manual(stat_test_race %>%
+                         filter(p.signif != 'ns'), label = "p.signif", size = 9) +
+
+  theme_light() + 
+  theme(axis.line = element_line(colour = "black"), #making x and y axes black
+        axis.text = element_text(size = 12), #changing size of x axis labels
+        legend.position = 'none', # removes legend
+        plot.margin = unit(c(0,0,2,2), "lines"), # adding space at the bottom of the figure
+        axis.title = element_text(face = "bold", size = rel(1.5)),
+        strip.text.x = element_text(size = 15, face = "bold"), #changes size of facet x axis 
+        strip.text.y = element_text(size = 15, face = "bold")) + #changes axis titles
+         
+   scale_fill_manual(values = c('#5ac394', '#a46ebb'))
+
+sex_boxplots = ggplot(data = longer_subject_scores_df, aes(x = Sex, y = Value)) + 
+  geom_boxplot(aes(fill = Sex)) + 
+  geom_point(position = position_jitter(w = 0.1)) + 
+
+  facet_wrap(~Variable, scale = 'free_y') +
+
+  theme_light() + 
+  theme(axis.line = element_line(colour = "black"), #making x and y axes black
+        axis.text = element_text(size = 12), #changing size of x axis labels
+        legend.position = 'none', # removes legend
+        plot.margin = unit(c(0,0,2,2), "lines"), # adding space at the bottom of the figure
+        axis.title = element_text(face = "bold", size = rel(1.5)),
+        strip.text.x = element_text(size = 15, face = "bold"), #changes size of facet x axis 
+        strip.text.y = element_text(size = 15, face = "bold"))  #changes axis titles
+
+smoking_boxplots = ggplot(data = longer_subject_scores_df, aes(x = Smoking_Status, y = Value)) + 
+  geom_boxplot(aes(fill = Smoking_Status)) + 
+  geom_point(position = position_jitter(w = 0.1)) + 
+
+  facet_wrap(~Variable, scale = 'free_y') +
+
+  # t test p value
+  stat_pvalue_manual(stat_test_smoking %>%
+                         filter(p.signif != 'ns'), label = "p.signif", size = 9) +
+
+  theme_light() + 
+  theme(axis.line = element_line(colour = "black"), #making x and y axes black
+        axis.text = element_text(size = 12), #changing size of x axis labels
+        legend.position = 'none', # removes legend
+        plot.margin = unit(c(0,0,2,2), "lines"), # adding space at the bottom of the figure
+        axis.title = element_text(face = "bold", size = rel(1.5)),
+        strip.text.x = element_text(size = 15, face = "bold"), #changes size of facet x axis 
+        strip.text.y = element_text(size = 15, face = "bold")) + #changes axis titles
+         
+   labs(x = 'Smoking Status') + #changing axis labels 
+   scale_fill_manual(values = c('#b3669e', '#98984d'))
+
+
+race_boxplots
+sex_boxplots
+smoking_boxplots
+```
+
+```{r}
+
+# combining plots for export
+options(repr.plot.width = 14, repr.plot.height = 16) #changing size
+Figure2 = plot_grid(race_boxplots, sex_boxplots, smoking_boxplots, ncol = 1)
+
+Figure2
+```
+
+```{r}
+
+# combining plots for export
+options(repr.plot.width = 21, repr.plot.height = 16) #changing size
+Figure3 = plot_grid(fig3a,fig3b,fig3c,fig3d,fig3e,fig3f,fig3g,fig3h,fig3i, ncol = 3)
+
+Figure3
+```
+
+```{r}
+  # exporting
+
+Output = "~/Documents/0. Research Projects/1. Allostatic load method development/R files/untitled folder"
+
+write.xlsx(t_test_df, "t_test_results.xlsx", overwrite = TRUE)
+write.xlsx(anova_df, "anova_results.xlsx", overwrite = TRUE)
+write.xlsx(subject_scores_df, "subject_scores_results.xlsx", overwrite = TRUE)
+write.xlsx(pairwise_t_test_df, "pairwise_t_test_results.xlsx", overwrite = TRUE)
+
+
+```
+
+```{r}
+# exporting figures
+ggsave(FigureX1, 
+       filename = 'FigureX1.pdf',
+       path = "~/Documents/0. Research Projects/1. Allostatic load method development/R files/untitled folder",
+       width = 10, height = 10)
+
+ggsave(Figure2, 
+       filename = 'FigureX2.pdf',
+        path = "~/Documents/0. Research Projects/1. Allostatic load method development/R files/untitled folder",
+       width = 14, height = 16)
+
+ggsave(Figure3, 
+       filename = 'Figure3.pdf',
+       path = "~/Documents/0. Research Projects/1. Allostatic load method development/R files/",
+       width = 20, height = 16)
+```
+
